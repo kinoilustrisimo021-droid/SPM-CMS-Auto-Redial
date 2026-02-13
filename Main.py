@@ -12,7 +12,7 @@ import os
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="Auto Redial Web", page_icon="📞")
-st.title("🚀 Auto Redial Pro (Web Edition)")
+st.title("🚀 Auto Redial Pro (Local & Web)")
 
 # Environments
 ENVIRONMENTS = {
@@ -30,31 +30,34 @@ def is_past_stop_time():
 
 def init_driver():
     options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--window-size=1920,1080")
     
-    # Check if we are on Streamlit Cloud
-    # Streamlit Cloud installs the driver at /usr/bin/chromedriver via packages.txt
-    if os.path.exists("/usr/bin/chromedriver"):
+    # Detect if running on Streamlit Cloud or Local
+    is_cloud = os.path.exists("/usr/bin/chromedriver")
+    
+    if is_cloud:
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
         service = Service("/usr/bin/chromedriver")
     else:
-        # Fallback for local development
+        # LOCAL SETTINGS: Shows the browser window
         from webdriver_manager.chrome import ChromeDriverManager
+        options.add_argument("--start-maximized")
+        # options.add_argument("--headless") # Uncomment this if you want to hide the window locally
         service = Service(ChromeDriverManager().install())
-        
+    
+    options.add_argument("--window-size=1920,1080")
     driver = webdriver.Chrome(service=service, options=options)
     return driver
 
-# --- SESSION STATE INITIALIZATION ---
+# --- SESSION STATE ---
 if "user" not in st.session_state: st.session_state.user = ""
 if "kws" not in st.session_state: st.session_state.kws = ""
 if "running" not in st.session_state: st.session_state.running = False
 
-# --- SIDEBAR / SETTINGS ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("Credentials")
+    st.header("Settings")
     username = st.text_input("Username", value=st.session_state.user)
     password = st.text_input("Password", type="password")
     env_choice = st.selectbox("Environment", list(ENVIRONMENTS.keys()))
@@ -74,41 +77,48 @@ status_container = st.empty()
 
 if stop_btn:
     st.session_state.running = False
-    st.warning("Stopping... Browser will close shortly.")
 
 if start_btn:
     if not username or not password or not keywords:
-        st.error("Please fill in all fields!")
+        st.error("Missing Credentials!")
     else:
         st.session_state.running = True
         keyword_list = [k.strip() for k in keywords.split(",") if k.strip()]
         
         driver = None
         try:
-            status_container.info("🔄 Initializing browser...")
+            status_container.info("🔄 Starting Browser...")
             driver = init_driver()
             wait = WebDriverWait(driver, 15)
             
             while st.session_state.running:
                 if is_past_stop_time():
-                    st.warning("Time limit reached (9 PM Manila).")
+                    st.warning("Automatic stop at 9:00 PM.")
                     break
 
-                status_container.info(f"🌐 Logging into {env_choice}...")
-                driver.get(ENVIRONMENTS[env_choice])
+                status_container.info(f"🌐 Navigating to {env_choice}...")
+                try:
+                    driver.get(ENVIRONMENTS[env_choice])
+                except Exception as e:
+                    st.error(f"Network Error: Could not reach the website. Check if you need a VPN. {e}")
+                    break
 
-                # Login
-                wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@placeholder='Username']"))).send_keys(username)
-                wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@placeholder='Password']"))).send_keys(password)
-                wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#normalLogin > button"))).click()
-                time.sleep(3)
+                # Login Process
+                try:
+                    wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@placeholder='Username']"))).send_keys(username)
+                    wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@placeholder='Password']"))).send_keys(password)
+                    wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "#normalLogin > button"))).click()
+                    time.sleep(3)
+                    
+                    # Navigation
+                    wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[1]/div/div/ul/li[3]"))).click()
+                    wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[1]/div/div/ul/li[3]/ul/li[2]/a"))).click()
+                    time.sleep(2)
+                except Exception as e:
+                    st.error(f"Login/Nav Error: Website might have changed or is slow. {e}")
+                    break
 
-                # Navigation
-                wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[1]/div/div/ul/li[3]"))).click()
-                wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[1]/div/div/ul/li[3]/ul/li[2]/a"))).click()
-                time.sleep(2)
-
-                # Campaign Processing
+                # Dropdown Loop
                 campaign_dropdown = wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[2]/div/div[2]/div/div[1]/div/select")))
                 options_data = driver.execute_script(
                     "return Array.from(arguments[0].options).map(option => ({value: option.value, text: option.text}));",
@@ -120,9 +130,7 @@ if start_btn:
                 for idx, opt in enumerate(matching):
                     if not st.session_state.running: break
                     
-                    name = opt['text']
-                    status_container.warning(f"🔎 Checking ({idx+1}/{len(matching)}): {name}")
-                    
+                    status_container.warning(f"🔎 Checking ({idx+1}/{len(matching)}): {opt['text']}")
                     driver.execute_script("arguments[0].value = arguments[1]; arguments[0].dispatchEvent(new Event('change'));", campaign_dropdown, opt['value'])
                     time.sleep(2)
 
@@ -131,23 +139,23 @@ if start_btn:
                         total = int(wait.until(EC.presence_of_element_located((By.XPATH, "/html/body/div[2]/div[2]/div/div[2]/div/div[2]/div/small[2]/span"))).text.strip())
 
                         if dialed >= total and total > 0:
-                            # Redial Actions
+                            # Perform Redial Actions
                             driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[2]/div/div[3]/div/div[2]/div/div[1]/button/div/div"))))
                             time.sleep(0.5)
                             driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[2]/div/div[3]/div/div[2]/div/div[1]/div/div[2]/div/button[1]"))))
                             time.sleep(0.5)
                             driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "/html/body/div[2]/div[2]/div/div[3]/div/div[2]/div/div[2]/button"))))
-                            st.toast(f"✅ Redialed: {name}")
-                    except Exception:
+                            st.toast(f"✅ Redialed: {opt['text']}")
+                    except:
                         continue
                 
-                status_container.success("Cycle complete! Refreshing in 30 seconds...")
-                time.sleep(30)
+                status_container.success("Cycle finished. Waiting 60s...")
+                time.sleep(60)
                 driver.refresh()
 
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"Fatal Error: {e}")
         finally:
             if driver: driver.quit()
             st.session_state.running = False
-            status_container.info("System Stopped.")
+            status_container.info("Stopped.")
